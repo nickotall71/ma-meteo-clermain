@@ -1,9 +1,4 @@
 streamlit
-openmeteo-requests
-requests-cache
 pandas
-plotly
-streamlit-folium
-folium
-retry-requests
 requests
+plotly
