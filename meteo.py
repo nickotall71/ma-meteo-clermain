@@ -1,160 +1,136 @@
 import streamlit as st
-import openmeteo_requests
-import requests_cache
 import pandas as pd
-from retry_requests import retry
-import plotly.graph_objects as go
-import streamlit.components.v1 as components
 import requests
+import math
+import plotly.graph_objects as go
+from datetime import datetime
 
-# --- 1. CONFIGURATION ET GÉOCODAGE ---
-st.set_page_config(page_title="Météo Expert Pro", layout="wide", page_icon="🌤️")
+# --- CONFIGURATION DE LA PAGE ---
+st.set_page_config(page_title="Météo Clermain", page_icon="🌤️", layout="wide")
 
-def get_coords(ville):
-    """Transforme un nom de ville en coordonnées GPS via l'API Geocoding"""
-    url = f"https://geocoding-api.open-meteo.com/v1/search?name={ville}&count=1&language=fr&format=json"
+# --- FONCTION DE RÉCUPÉRATION DES DONNÉES ---
+@st.cache_data(ttl=900)
+def recuperer_meteo():
+    # Coordonnées de Clermain (71)
+    lat, lon = 46.36, 4.58
+    # On demande les données AROME pour 48h (2 jours)
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation_probability,precipitation&models=arome_france_hd&timezone=Europe%2FBerlin&forecast_days=2"
+    
     try:
-        r = requests.get(url).json()
-        if "results" in r:
-            res = r["results"][0]
-            return res["latitude"], res["longitude"], res.get("name", ville), res.get("admin1", "")
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Création du tableau avec noms en Français pour le survol
+        df = pd.DataFrame({
+            'Heure': pd.to_datetime(data['hourly']['time']),
+            'Température': data['hourly']['temperature_2m'],
+            'Humidité': data['hourly']['relative_humidity_2m'],
+            'Vent': data['hourly']['wind_speed_10m'],
+            'Probabilité Pluie': data['hourly']['precipitation_probability'],
+            'Pluie': data['hourly']['precipitation']
+        })
+        return df
     except:
-        pass
-    return 46.368, 4.581, "Clermain", "Saône-et-Loire"
+        return None
 
-# Barre latérale de recherche
-st.sidebar.header("🔍 Localisation")
-ville_input = st.sidebar.text_input("Ville ou Commune", "Clermain")
-LAT, LON, NOM_VILLE, REGION = get_coords(ville_input)
+# --- CALCUL DE L'HUMIDEX (RESSENTI) ---
+def calculer_humidex(T, H):
+    Td = T - ((100 - H) / 5.0)
+    e = 6.11 * math.exp(5417.75 * (1.0/273.16 - 1.0/(273.15 + Td)))
+    return round(T + 0.5555 * (e - 10.0), 1)
 
-# --- 2. LOGIQUE DES ICÔNES RÉALISTES (SVG ANIMÉS) ---
-def get_weather_icon(code):
-    """Retourne l'URL d'une icône animée selon le code météo WMO"""
-    base_url = "https://www.amcharts.com/wp-content/themes/amcharts4/css/img/icons/weather/animated/"
-    # Mapping des codes météo vers les fichiers SVG animés
-    icons = {
-        0: "day.svg",              # Ciel dégagé
-        1: "cloudy-day-1.svg",     # Principalement dégagé
-        2: "cloudy-day-3.svg",     # Partiellement nuageux
-        3: "cloudy.svg",           # Couvert
-        45: "cloudy.svg",          # Brouillard
-        48: "cloudy.svg",          # Brouillard givrant
-        51: "rainy-4.svg",         # Bruine légère
-        61: "rainy-5.svg",         # Pluie modérée
-        63: "rainy-6.svg",         # Pluie forte
-        71: "snowy-4.svg",         # Neige légère
-        80: "rainy-1.svg",         # Averses légères
-        95: "thunder.svg",         # Orage
-    }
-    filename = icons.get(int(code), "day.svg")
-    if code > 3 and code < 50: filename = "cloudy.svg"
-    elif code >= 51 and code <= 67: filename = "rainy-6.svg"
-    elif code >= 71 and code <= 77: filename = "snowy-6.svg"
+# --- CHARGEMENT DES DONNÉES ---
+df_meteo = recuperer_meteo()
+
+if df_meteo is not None:
+    # 1. Index de l'heure actuelle
+    maintenant = datetime.now()
+    idx = (df_meteo['Heure'] - maintenant).abs().idxmin()
     
-    return base_url + filename
+    # 2. Données pour les 4 cases (Metrics)
+    t_actuelle = df_meteo['Température'].iloc[idx]
+    v_actuel = df_meteo['Vent'].iloc[idx]
+    p_actuelle = df_meteo['Probabilité Pluie'].iloc[idx]
+    h_actuelle = df_meteo['Humidité'].iloc[idx]
+    ressenti = calculer_humidex(t_actuelle, h_actuelle)
 
-# --- 3. RÉCUPÉRATION DES DONNÉES (MODÈLE AROME) ---
-cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
-retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
-openmeteo = openmeteo_requests.Client(session = retry_session)
+    st.title("🌤️ Météo Clermain - Haute Précision")
 
-params = {
-    "latitude": LAT,
-    "longitude": LON,
-    "hourly": ["temperature_2m", "precipitation", "weather_code", "wind_speed_10m"],
-    "models": "best_match",
-    "timezone": "Europe/Paris"
-}
+    # --- AFFICHAGE DES 4 CASES ---
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("🌡️ Température", f"{t_actuelle}°C")
+    col2.metric("💨 Vent", f"{v_actuel} km/h")
+    col3.metric("☔ Probabilité Pluie", f"{p_actuelle}%")
+    col4.metric("🧘 Ressenti", f"{ressenti}°C")
 
-try:
-    responses = openmeteo.weather_api("https://api.open-meteo.com/v1/forecast", params=params)
-    response = responses[0]
-    hourly = response.Hourly()
+    st.divider()
+
+    # --- GRAPHE INTERACTIF (PLOTLY) ---
+    st.subheader("Prévisions détaillées sur 48 heures")
     
-    df = pd.DataFrame({
-        "date": pd.date_range(
-            start = pd.to_datetime(hourly.Time(), unit = "s", utc = True).tz_convert('Europe/Paris'),
-            end = pd.to_datetime(hourly.TimeEnd(), unit = "s", utc = True).tz_convert('Europe/Paris'),
-            freq = pd.Timedelta(seconds = hourly.Interval()), inclusive = "left"
-        ),
-        "temp": hourly.Variables(0).ValuesAsNumpy(),
-        "pluie": hourly.Variables(1).ValuesAsNumpy(),
-        "code": hourly.Variables(2).ValuesAsNumpy(),
-        "vent": hourly.Variables(3).ValuesAsNumpy()
-    })
-    
-    df['icon_url'] = df['code'].apply(get_weather_icon)
+    fig = go.Figure()
 
-    # --- 4. INTERFACE GRAPHIQUE ---
-    st.title(f"🌦️ Station Météo : {NOM_VILLE} ({REGION})")
-    
-    col1, col2 = st.columns([1, 1.5])
+    # Courbe de Température
+    fig.add_trace(go.Scatter(
+        x=df_meteo['Heure'], 
+        y=df_meteo['Température'],
+        name='Température (°C)',
+        line=dict(color='#FF4B4B', width=3),
+        hovertemplate='%{y}°C'
+    ))
 
-    with col1:
-        st.subheader("📡 Radar de pluie Live")
-        # Radar RainViewer intégré
-        radar_url = f"https://www.rainviewer.com/map.html?loc={LAT},{LON},10&type=radar&range=true&rt=1&st=1&v=1&p=1&is=1&v=1&sm=1&sn=1"
-        components.iframe(radar_url, height=500)
+    # Courbe du Vent
+    fig.add_trace(go.Scatter(
+        x=df_meteo['Heure'], 
+        y=df_meteo['Vent'],
+        name='Vent (km/h)',
+        line=dict(color='#31333F', dash='dash'),
+        hovertemplate='%{y} km/h'
+    ))
+
+    # Barres de Précipitations
+    fig.add_trace(go.Bar(
+        x=df_meteo['Heure'], 
+        y=df_meteo['Pluie'],
+        name='Pluie (mm)',
+        marker_color='#0077FF',
+        opacity=0.6,
+        hovertemplate='%{y} mm'
+    ))
+
+    # Réglages de l'interactivité et du design
+    fig.update_layout(
+        hovermode="x unified",  # Affiche toutes les valeurs au survol d'une heure
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis=dict(title="Date et Heure"),
+        yaxis=dict(title="Valeurs"),
+        height=500,
+        margin=dict(l=0, r=0, t=50, b=0)
+    )
+
+    # Affichage du graphe
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- CARTE COMPACTE ET INFOS ---
+    st.divider()
+    map_col, info_col = st.columns([1, 2])
+    
+    with map_col:
+        st.subheader("Localisation")
+        map_data = pd.DataFrame({'lat': [46.36], 'lon': [4.58]})
+        st.map(map_data, zoom=11)
         
-        st.metric("🌡️ Température Actuelle", f"{df.iloc[0]['temp']:.1f} °C")
-        st.metric("💨 Vent", f"{df.iloc[0]['vent']:.1f} km/h")
+    with info_col:
+        st.subheader("Informations")
+        st.info(f"""
+        **Source :** Modèle AROME 1.3km (Météo-France) via Open-Meteo.  
+        **Dernière mise à jour :** {maintenant.strftime('%H:%M')}  
+        **Lieu :** Clermain (Navour-sur-Grosne)
+        """)
+        if st.button('🔄 Forcer l\'actualisation'):
+            st.cache_data.clear()
+            st.rerun()
 
-    with col2:
-        st.subheader("📊 Prévisions & Phénomènes (AROME 1.3km)")
-        
-        fig = go.Figure()
-
-        # Courbe de Température
-        fig.add_trace(go.Scatter(
-            x=df['date'][:48], y=df['temp'][:48],
-            name="Température (°C)",
-            line=dict(color='#FF8C00', width=4, shape='spline'),
-            mode='lines'
-        ))
-
-        # Barres de Précipitations
-        fig.add_trace(go.Bar(
-            x=df['date'][:48], y=df['pluie'][:48],
-            name="Pluie (mm)",
-            marker_color='rgba(0, 150, 255, 0.5)',
-            yaxis="y2"
-        ))
-
-        # AJOUT DES ICÔNES ANIMÉES SUR LE GRAPHIQUE
-        # On affiche une icône toutes les 4 heures
-        for i in range(0, 48, 4):
-            fig.add_layout_image(
-                dict(
-                    source=df['icon_url'][i],
-                    xref="x", yref="y",
-                    x=df['date'][i],
-                    y=df['temp'][i] + 1.2,
-                    sizex=4 * 3600000, # Largeur de l'icône
-                    sizey=2.5,         # Hauteur de l'icône
-                    xanchor="center", yanchor="bottom"
-                )
-            )
-
-        fig.update_layout(
-            hovermode="x unified",
-            height=500,
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=0, r=0, t=20, b=0),
-            yaxis=dict(title="Température (°C)", gridcolor='rgba(255,255,255,0.1)'),
-            yaxis2=dict(title="Précipitations (mm)", overlaying="y", side="right", range=[0, 10], showgrid=False),
-            showlegend=False,
-            font=dict(color="white")
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Style CSS pour l'ambiance "Dark Mode"
-    st.markdown("""
-        <style>
-        .stApp { background-color: #121212; color: #e0e0e0; }
-        .stMetric { background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; }
-        </style>
-    """, unsafe_allow_html=True)
-
-except Exception as e:
-    st.error(f"Erreur de flux : {e}")
+else:
+    st.error("Impossible de récupérer les données météo. Vérifiez votre connexion.")
