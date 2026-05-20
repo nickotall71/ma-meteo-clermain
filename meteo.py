@@ -30,7 +30,7 @@ def obtenir_icone(temperature, proba_pluie, pluie_mm):
     else:
         return "🌤️"
 
-# --- GÉOCODAGE ---
+# --- GÉOCODAGE LOCAL ---
 def obtenir_coordonnees(ville):
     nom_clean = ville.strip().lower()
     base_locales = {
@@ -45,22 +45,19 @@ def obtenir_coordonnees(ville):
     for cle, valeurs in base_locales.items():
         if cle in nom_clean:
             return valeurs
-    try:
-        url_direct = f"https://nominatim.openstreetmap.org/search?q={requests.utils.quote(ville)}&format=json&limit=1"
-        res = requests.get(url_direct, headers={'User-Agent': 'MeteoExpertMobile_V6'}, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            if data:
-                return float(data[0]['lat']), float(data[0]['lon']), data[0]['display_name']
-    except:
-        pass
-    return 46.3667, 4.5833, f"{ville} (Coordonnées : Saône-et-Loire)"
+    return 46.3667, 4.5833, "Clermain, Bourgogne-Franche-Comté"
 
-# --- RÉCUPÉRATION DES DONNÉES ---
+# --- RÉCUPÉRATION DES DONNÉES (VERSION DE SÉCURITÉ CONTOURLEMENT MOBILE) ---
 def fetch_meteo(lati, longi, model, days):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lati}&longitude={longi}&hourly=temperature_2m,relative_humidity_2m,precipitation,precipitation_probability,wind_speed_10m&models={model}&timezone=Europe%2FBerlin&forecast_days={days}"
+    
+    # Masquage de la requête : on fait croire à l'opérateur mobile qu'on est un navigateur PC standard
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, headers=headers, timeout=12)
         if response.status_code != 200:
             return None
         data = response.json()
@@ -98,14 +95,14 @@ if df_arome is not None:
 
     st.success(f"📍 **{nom_complet}**")
 
-    # --- METRICS COMPACTES ---
+    # --- METRICS ---
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("🌡️ Temp.", f"{t_actu}°C")
     c2.metric("🥵 Ressenti", f"{h_actu}°C")
     c3.metric("💨 Vent", f"{df_arome['Vent'].iloc[idx]} km/h")
     c4.metric("☔ Pluie (2h)", f"{p_max}%")
 
-    # --- FONCTION GRAPHIQUE OPTIMISÉE POUR SMARTPHONE ---
+    # --- GRAPHES ---
     def make_fig(df, is_detail):
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df['Heure'], y=df['Temp'], name="Temp.", line=dict(color='#FF9800', width=3)))
@@ -114,34 +111,20 @@ if df_arome is not None:
         fig.add_trace(go.Bar(x=df['Heure'], y=df['Pluie'], name="Pluie", marker_color='#2196F3', opacity=0.4))
         
         fig.update_layout(
-            height=350, # Hauteur légèrement réduite idéale pour les écrans mobiles
+            height=350, 
             margin=dict(l=10, r=10, t=20, b=10), 
             hovermode="x unified", 
-            legend=dict(
-                orientation="h", 
-                y=-0.2, # Déplacement de la légende en dessous pour éviter les chevauchements sur petit écran
-                x=0.5,
-                xanchor="center"
-            )
+            legend=dict(orientation="h", y=-0.2, x=0.5, xanchor="center")
         )
         return fig
 
-    # --- AFFICHAGE SÉCURISÉ DES GRAPHIQUES ---
     st.divider()
     st.subheader("🎯 Zoom 48h (AROME France)")
-    try:
-        # Le paramètre config retire les boutons lourds de Plotly pour soulager les mobiles
-        st.plotly_chart(make_fig(df_arome, True), use_container_width=True, config={'displayModeBar': False})
-    except Exception as e:
-        st.warning("Affichage simplifié du graphique 48h sur ce terminal.")
-        st.line_chart(df_arome[['Heure', 'Temp', 'Humidex', 'Vent']].set_index('Heure'))
+    st.plotly_chart(make_fig(df_arome, True), use_container_width=True, config={'displayModeBar': False})
 
     if df_ecmwf is not None:
         st.divider()
         st.subheader("📅 Tendance 7 Jours (ECMWF)")
-        try:
-            st.plotly_chart(make_fig(df_ecmwf, False), use_container_width=True, config={'displayModeBar': False})
-        except Exception as e:
-            st.line_chart(df_ecmwf[['Heure', 'Temp', 'Humidex', 'Vent']].set_index('Heure'))
+        st.plotly_chart(make_fig(df_ecmwf, False), use_container_width=True, config={'displayModeBar': False})
 else:
     st.error("⚠️ Problème technique de synchronisation. Veuillez rafraîchir l'application.")
