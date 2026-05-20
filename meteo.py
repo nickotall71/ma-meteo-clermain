@@ -32,19 +32,31 @@ def obtenir_icone(temperature, proba_pluie, pluie_mm):
 
 # --- GÉOCODAGE ---
 def obtenir_coordonnees(ville):
+    nom_clean = ville.strip().lower()
+    base_locales = {
+        "clermain": (46.3667, 4.5833, "Clermain, Bourgogne-Franche-Comté"),
+        "navour": (46.3667, 4.5833, "Navour-sur-Grosne, Bourgogne-Franche-Comté"),
+        "macon": (46.3000, 4.8333, "Mâcon, Bourgogne-Franche-Comté"),
+        "tournus": (46.5667, 4.9111, "Tournus, Bourgogne-Franche-Comté"),
+        "chalon": (46.7833, 4.8500, "Chalon-sur-Saône, Bourgogne-Franche-Comté"),
+        "lyon": (45.7500, 4.8500, "Lyon, Auvergne-Rhône-Alpes"),
+        "paris": (48.8566, 2.3522, "Paris, Île-de-France")
+    }
+    for cle, valeurs in base_locales.items():
+        if cle in nom_clean:
+            return valeurs
     try:
         url_direct = f"https://nominatim.openstreetmap.org/search?q={requests.utils.quote(ville)}&format=json&limit=1"
-        res = requests.get(url_direct, headers={'User-Agent': 'MeteoExpertAppV3'}, timeout=5)
+        res = requests.get(url_direct, headers={'User-Agent': 'MeteoExpertMobile_V6'}, timeout=5)
         if res.status_code == 200:
             data = res.json()
             if data:
                 return float(data[0]['lat']), float(data[0]['lon']), data[0]['display_name']
     except:
         pass
-    # Repli par défaut sur Clermain pour éviter tout plantage
-    return 46.3667, 4.5833, "Clermain, Bourgogne-Franche-Comté"
+    return 46.3667, 4.5833, f"{ville} (Coordonnées : Saône-et-Loire)"
 
-# --- RÉCUPÉRATION DES DONNÉES (SANS CACHE POUR ÉVITER LES CONFLITS DE VERSION) ---
+# --- RÉCUPÉRATION DES DONNÉES ---
 def fetch_meteo(lati, longi, model, days):
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lati}&longitude={longi}&hourly=temperature_2m,relative_humidity_2m,precipitation,precipitation_probability,wind_speed_10m&models={model}&timezone=Europe%2FBerlin&forecast_days={days}"
     try:
@@ -69,11 +81,9 @@ def fetch_meteo(lati, longi, model, days):
 # --- INTERFACE ---
 st.title("🌤️ Météo Expert Pro")
 
-# Formulaire de recherche
 nom_ville = st.text_input("🔍 Entrez une ville", value="Clermain")
 lat, lon, nom_complet = obtenir_coordonnees(nom_ville)
 
-# Appel direct des fonctions (sans passer par le cache partagé)
 df_arome = fetch_meteo(lat, lon, "arome_france_hd", 2)
 df_ecmwf = fetch_meteo(lat, lon, "ecmwf_ifs025", 7)
 
@@ -88,36 +98,50 @@ if df_arome is not None:
 
     st.success(f"📍 **{nom_complet}**")
 
-    # --- METRICS ---
+    # --- METRICS COMPACTES ---
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("🌡️ Temp.", f"{t_actu}°C")
-    c2.metric("🥵 Ressenti (Humidex)", f"{h_actu}°C")
+    c2.metric("🥵 Ressenti", f"{h_actu}°C")
     c3.metric("💨 Vent", f"{df_arome['Vent'].iloc[idx]} km/h")
-    c4.metric("☔ Risque Pluie (2h)", f"{p_max}%")
+    c4.metric("☔ Pluie (2h)", f"{p_max}%")
 
-    # --- GRAPHIQUE ---
+    # --- FONCTION GRAPHIQUE OPTIMISÉE POUR SMARTPHONE ---
     def make_fig(df, is_detail):
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df['Heure'], y=df['Temp'], name="Temp. Réelle", line=dict(color='#FF9800', width=3)))
-        fig.add_trace(go.Scatter(x=df['Heure'], y=df['Humidex'], name="Humidex (Ressenti)", line=dict(color='#e74c3c', width=1.5, dash='dash')))
+        fig.add_trace(go.Scatter(x=df['Heure'], y=df['Temp'], name="Temp.", line=dict(color='#FF9800', width=3)))
+        fig.add_trace(go.Scatter(x=df['Heure'], y=df['Humidex'], name="Humidex", line=dict(color='#e74c3c', width=1.5, dash='dash')))
         fig.add_trace(go.Scatter(x=df['Heure'], y=df['Vent'], name="Vent", line=dict(color='#9E9E9E', width=1.5, dash='dot')))
         fig.add_trace(go.Bar(x=df['Heure'], y=df['Pluie'], name="Pluie", marker_color='#2196F3', opacity=0.4))
         
         fig.update_layout(
-            height=400, 
-            margin=dict(l=5,r=5,t=30,b=5), 
+            height=350, # Hauteur légèrement réduite idéale pour les écrans mobiles
+            margin=dict(l=10, r=10, t=20, b=10), 
             hovermode="x unified", 
-            legend=dict(orientation="h", y=1.2)
+            legend=dict(
+                orientation="h", 
+                y=-0.2, # Déplacement de la légende en dessous pour éviter les chevauchements sur petit écran
+                x=0.5,
+                xanchor="center"
+            )
         )
         return fig
 
+    # --- AFFICHAGE SÉCURISÉ DES GRAPHIQUES ---
     st.divider()
     st.subheader("🎯 Zoom 48h (AROME France)")
-    st.plotly_chart(make_fig(df_arome, True), use_container_width=True)
+    try:
+        # Le paramètre config retire les boutons lourds de Plotly pour soulager les mobiles
+        st.plotly_chart(make_fig(df_arome, True), use_container_width=True, config={'displayModeBar': False})
+    except Exception as e:
+        st.warning("Affichage simplifié du graphique 48h sur ce terminal.")
+        st.line_chart(df_arome[['Heure', 'Temp', 'Humidex', 'Vent']].set_index('Heure'))
 
     if df_ecmwf is not None:
         st.divider()
         st.subheader("📅 Tendance 7 Jours (ECMWF)")
-        st.plotly_chart(make_fig(df_ecmwf, False), use_container_width=True)
+        try:
+            st.plotly_chart(make_fig(df_ecmwf, False), use_container_width=True, config={'displayModeBar': False})
+        except Exception as e:
+            st.line_chart(df_ecmwf[['Heure', 'Temp', 'Humidex', 'Vent']].set_index('Heure'))
 else:
-    st.error("⚠️ Problème technique lors de la génération des graphiques. Veuillez rafraîchir la page.")
+    st.error("⚠️ Problème technique de synchronisation. Veuillez rafraîchir l'application.")
